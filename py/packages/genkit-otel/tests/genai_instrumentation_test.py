@@ -298,7 +298,7 @@ async def test_reports_tool_calls_from_legacy_candidates(harness) -> None:
 
 @pytest.mark.asyncio
 async def test_classifies_action_subtype_model_as_chat(harness) -> None:
-    """Python action leftover: type=action, subtype=model still becomes a chat span."""
+    """A registry action tagged type=action, subtype=model is still a chat span."""
     instr = harness.instrumentation()
 
     async def body(span=None):

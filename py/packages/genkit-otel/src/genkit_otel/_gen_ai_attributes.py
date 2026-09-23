@@ -85,9 +85,6 @@ class GenAiMetric:
     OPERATION_DURATION = 'gen_ai.client.operation.duration'
 
 
-GEN_AI_SEMCONV_VERSION = '1.38.0'
-
-
 def split_model_name(name: str) -> tuple[str | None, str]:
     """Split a fully qualified model name into ``(prefix, model)``.
 

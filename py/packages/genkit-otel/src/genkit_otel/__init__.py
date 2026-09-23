@@ -14,13 +14,12 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""OpenTelemetry instrumentation and backend for Genkit.
+"""OpenTelemetry instrumentation for Genkit.
 
-If they already set the process tracer, this mints Genkit spans there.
-Cloud Trace is ``enable_google_cloud_telemetry()``.
-
-Configure ``GenAiInstrumentation`` before creating ``Genkit``, and let
-the application own the OpenTelemetry SDK:
+Configure ``GenAiInstrumentation`` before creating ``Genkit``. The
+application owns the OpenTelemetry SDK. ``OtelInstrumentation`` mints
+``genkit:*`` spans on the global tracer. Cloud Trace is
+``enable_google_cloud_telemetry()``.
 
 ```python
 from opentelemetry import trace

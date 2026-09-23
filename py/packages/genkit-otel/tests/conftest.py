@@ -28,7 +28,7 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanE
 
 
 class OtelHarness:
-    """In-memory OTel leftover: spans and metrics a later reader sees."""
+    """In-memory exporter: spans and metrics the tests read back."""
 
     def __init__(self) -> None:
         self.spans = InMemorySpanExporter()
