@@ -18,8 +18,7 @@
 
 Configure ``GenAiInstrumentation`` before creating ``Genkit``. The
 application owns the OpenTelemetry SDK. ``OtelInstrumentation`` mints
-``genkit:*`` spans on the global tracer. Cloud Trace is
-``enable_google_cloud_telemetry()``.
+``genkit:*`` spans on the global tracer.
 
 ```python
 from opentelemetry import trace
