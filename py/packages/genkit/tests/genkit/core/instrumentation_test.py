@@ -10,7 +10,6 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable, Mapping
 
 import pytest
-from genkit_otel import OtelInstrumentation
 
 from genkit._core._telemetry._instrumentation import (
     SpanContext,
@@ -204,25 +203,19 @@ def test_configure_rejects_a_non_instrumentation() -> None:
         configure_instrumentation(object())  # type: ignore[arg-type]
 
 
-def test_otel_instrumentation_rejects_a_non_tracer_provider() -> None:
-    """OtelInstrumentation(tracer_provider=object()) raises."""
-    with pytest.raises(TypeError, match='TracerProvider'):
-        OtelInstrumentation(tracer_provider=object())  # type: ignore[arg-type]
-
-
 def test_configure_rejects_the_class_instead_of_an_instance() -> None:
-    """Passing OtelInstrumentation the class, not an instance, raises."""
+    """Passing FakeInstrumentation the class, not an instance, raises."""
     with pytest.raises(
         TypeError,
-        match='type genkit_otel._provider.OtelInstrumentation',
+        match='FakeInstrumentation',
     ):
-        configure_instrumentation(OtelInstrumentation)  # type: ignore[arg-type]
+        configure_instrumentation(FakeInstrumentation)  # type: ignore[arg-type]
 
 
 def test_is_instrumented_by_rejects_a_string_name() -> None:
     """is_instrumented_by wants the class, not the name as a string."""
     with pytest.raises(TypeError, match='builtins.str'):
-        is_instrumented_by('OtelInstrumentation')  # type: ignore[arg-type]
+        is_instrumented_by('HexInstrumentation')  # type: ignore[arg-type]
 
 
 @pytest.mark.asyncio

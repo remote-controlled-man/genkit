@@ -27,7 +27,7 @@ from genkit_google_cloud.telemetry.tracing import (
     _reset_google_cloud_telemetry,
     enable_google_cloud_telemetry,
 )
-from genkit_otel import OtelInstrumentation
+from genkit_otel import GenAiInstrumentation
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor, SimpleSpanProcessor
 
@@ -149,7 +149,7 @@ def test_enable_google_cloud_telemetry_skips_in_dev_without_force() -> None:
         # Verify nothing was called
         mock_gcp_exporter.assert_not_called()
         mock_add_exporter.assert_not_called()
-        assert not is_instrumented_by(OtelInstrumentation)
+        assert not is_instrumented_by(GenAiInstrumentation)
 
 
 def test_enable_google_cloud_telemetry_exports_in_dev_with_force() -> None:
@@ -169,7 +169,7 @@ def test_enable_google_cloud_telemetry_exports_in_dev_with_force() -> None:
 
         mock_gcp_exporter.assert_called_once()
         mock_add_exporter.assert_called_once()
-        assert is_instrumented_by(OtelInstrumentation)
+        assert is_instrumented_by(GenAiInstrumentation)
 
 
 def test_enable_google_cloud_telemetry_disable_traces() -> None:
@@ -190,7 +190,7 @@ def test_enable_google_cloud_telemetry_disable_traces() -> None:
         # Verify trace exporter was NOT created
         mock_gcp_exporter.assert_not_called()
         mock_add_exporter.assert_not_called()
-        assert not is_instrumented_by(OtelInstrumentation)
+        assert not is_instrumented_by(GenAiInstrumentation)
 
 
 def test_enable_google_cloud_telemetry_disable_metrics() -> None:
@@ -214,6 +214,7 @@ def test_enable_google_cloud_telemetry_disable_metrics() -> None:
         mock_metric_exp.assert_not_called()
         mock_genkit_metric.assert_not_called()
         mock_reader.assert_not_called()
+        assert is_instrumented_by(GenAiInstrumentation)
 
 
 def test_enable_google_cloud_telemetry_custom_metric_interval() -> None:
@@ -406,7 +407,7 @@ def test_leftover_collector_env_in_prod_does_not_block_cloud() -> None:
         patch('genkit_google_cloud.telemetry.config.metrics'),
     ):
         enable_google_cloud_telemetry(project_id='my-project')
-        assert is_instrumented_by(OtelInstrumentation)
+        assert is_instrumented_by(GenAiInstrumentation)
 
 
 def _processors(provider: TracerProvider) -> tuple[object, ...]:

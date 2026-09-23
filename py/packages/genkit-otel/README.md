@@ -2,11 +2,9 @@
 
 OpenTelemetry instrumentation and backend for [Genkit](https://github.com/genkit-ai/genkit).
 
-It provides:
-- `OtelInstrumentation`: OpenTelemetry backend for Genkit traces.
-- `GenAiInstrumentation`: OpenTelemetry GenAI semantic-conventions instrumentation emitting `gen_ai.*` spans and metrics.
+It provides `GenAiInstrumentation`: OpenTelemetry GenAI semantic-conventions instrumentation emitting `gen_ai.*` spans and metrics.
 
-Pass `tracer_provider` to mint on that provider instead of the process-global one.
+Pass `tracer` to mint on that tracer instead of the process-global one.
 
 ## GenAI Semantic Conventions Instrumentation
 

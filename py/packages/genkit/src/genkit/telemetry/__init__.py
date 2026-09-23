@@ -17,14 +17,8 @@
 """On-switch for Genkit traces, and the protocol for a recording backend.
 
 Application code should call :class:`genkit.Genkit`. ``genkit start``
-records to the Developer UI. Configure a backend when you want Cloud
-Trace or your own OpenTelemetry provider.
-
-Example:
-    from genkit.telemetry import configure_instrumentation
-    from genkit_otel import OtelInstrumentation
-
-    configure_instrumentation(OtelInstrumentation())
+records to the Developer UI. ``configure_instrumentation`` is the hook
+for a recording backend.
 """
 
 from genkit._core._telemetry._instrumentation import (

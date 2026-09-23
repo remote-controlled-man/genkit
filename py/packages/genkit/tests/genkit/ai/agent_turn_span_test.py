@@ -20,14 +20,9 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Generator, Sequence
+from collections.abc import Sequence
 
 import pytest
-from genkit_otel import OtelInstrumentation
-from opentelemetry import trace as trace_api
-from opentelemetry.sdk.trace import ReadableSpan, TracerProvider
-from opentelemetry.sdk.trace.export import SimpleSpanProcessor
-from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
 from genkit import Part
 from genkit._ai._agents._base import define_custom_agent
@@ -38,38 +33,15 @@ from genkit._core._action import ActionRunContext
 from genkit._core._model import AgentInput, AgentResult, Message, SessionState
 from genkit._core._registry import Registry
 from genkit._core._telemetry._attrs import Attr, metadata_key
-from genkit._core._telemetry._instrumentation import reset_instrumentation
+from genkit._core._telemetry.http import ActiveSpan
 from genkit.exp.agent import AgentFinishReason, InMemorySessionStore
-from genkit.telemetry import configure_instrumentation
 
 UUID_RE = re.compile(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$', re.I)
 SESSION_ID_ATTR = metadata_key('agent:sessionId')
 SNAPSHOT_ID_ATTR = metadata_key('agent:snapshotId')
 
 
-@pytest.fixture
-def exporter() -> Generator[InMemorySpanExporter, None, None]:
-    provider = trace_api.get_tracer_provider()
-    if not isinstance(provider, TracerProvider):
-        provider = TracerProvider()
-        trace_api.set_tracer_provider(provider)
-    exp = InMemorySpanExporter()
-    processor = SimpleSpanProcessor(exp)
-    provider.add_span_processor(processor)
-    reset_instrumentation()
-    configure_instrumentation(OtelInstrumentation(tracer_provider=provider))
-    try:
-        yield exp
-    finally:
-        exp.clear()
-        reset_instrumentation()
-        if hasattr(provider, '_active_span_processor'):
-            provider._active_span_processor._span_processors = tuple(
-                p for p in provider._active_span_processor._span_processors if p is not processor
-            )
-
-
-def _by_name(spans: Sequence[ReadableSpan], name: str) -> ReadableSpan:
+def _by_name(spans: Sequence[ActiveSpan], name: str) -> ActiveSpan:
     matches = [s for s in spans if s.name == name]
     assert matches, f'no span named {name!r} in {[s.name for s in spans]}'
     return matches[-1]
@@ -120,7 +92,7 @@ def test_session_does_not_mutate_caller_state() -> None:
 
 @pytest.mark.asyncio
 async def test_run_turn_span_output_is_session_state_with_store(
-    exporter: InMemorySpanExporter,
+    exporter,
 ) -> None:
     """Session store: root span has session id; runTurn output is the stored state."""
     registry = Registry()
@@ -139,7 +111,6 @@ async def test_run_turn_span_output_is_session_state_with_store(
 
     turn_span = _by_name(spans, 'runTurn-1')
     assert turn_span.attributes is not None
-    assert turn_span.attributes[Attr.TYPE] == 'flowStep'
     assert turn_span.attributes[SNAPSHOT_ID_ATTR] == out.snapshot_id
     assert SESSION_ID_ATTR not in turn_span.attributes
 
@@ -152,7 +123,7 @@ async def test_run_turn_span_output_is_session_state_with_store(
 
 @pytest.mark.asyncio
 async def test_run_turn_span_output_is_session_state_client_managed(
-    exporter: InMemorySpanExporter,
+    exporter,
 ) -> None:
     """No store: root span still has session id; runTurn output is the in-memory state."""
     registry = Registry()

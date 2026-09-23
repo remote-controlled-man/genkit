@@ -179,8 +179,8 @@ def configure_instrumentation(instrumentation: Instrumentation) -> None:
     """Turn on a telemetry backend. Call before ``Genkit()`` to stack backends.
 
     Each provider wraps the next. ``genkit start`` installs the Developer UI
-    HTTP poster when a collector URL is set. Cloud Trace still needs
-    ``OtelInstrumentation`` (or ``enable_google_cloud_telemetry()``).
+    HTTP poster when a collector URL is set. ``enable_google_cloud_telemetry()``
+    hangs Cloud's exporter; it does not mint spans.
     """
     # The class itself has run_in_new_span, so a forgotten () would pass a
     # Protocol check and then die inside OTel on the first span.
@@ -215,9 +215,8 @@ def reset_instrumentation() -> None:
 def is_instrumented_by(kind: type) -> bool:
     """True when a configured provider is an instance of ``kind``.
 
-    Use ``is_instrumented_by(OtelInstrumentation)`` for Cloud Trace, or
-    ``is_instrumented_by(GenkitBuiltinInstrumentation)`` for the Developer
-    UI poster.
+    Use ``is_instrumented_by(GenkitBuiltinInstrumentation)`` for the
+    Developer UI poster.
     """
     if not isinstance(kind, type):
         raise TypeError('is_instrumented_by expected a type, got ' + describe_value(kind))

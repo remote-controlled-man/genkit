@@ -26,7 +26,7 @@ from genkit_google_cloud.telemetry.tracing import (
     _reset_google_cloud_telemetry,
     enable_google_cloud_telemetry,
 )
-from genkit_otel import OtelInstrumentation
+from genkit_otel import GenAiInstrumentation
 from opentelemetry import trace as trace_api
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
@@ -61,10 +61,6 @@ def _flush_exporters_in_provider(provider: TracerProvider) -> None:
 
 
 def _force_flush() -> None:
-    for inst in instrumentations:
-        if isinstance(inst, OtelInstrumentation) and inst._tracer_provider is not None:
-            inst._tracer_provider.force_flush()
-            _flush_exporters_in_provider(inst._tracer_provider)
     provider = trace_api.get_tracer_provider()
     if isinstance(provider, TracerProvider):
         provider.force_flush()
@@ -124,40 +120,40 @@ def _isolate_telemetry(monkeypatch: pytest.MonkeyPatch) -> Generator[None, None,
 
 
 @pytest.mark.asyncio
-async def test_enable_google_cloud_telemetry_is_enough() -> None:
-    """enable_google_cloud_telemetry() is enough; you get real hex ids."""
+async def test_enable_google_cloud_telemetry_mints_ids_and_sends_the_action_to_cloud() -> None:
+    """enable_google_cloud_telemetry() turns GenAI spans on; Cloud sees the action."""
     with _cloud_enable() as cloud:
         action = Action(name='joke', kind=ActionKind.FLOW, fn=_joke)
         result = await action.run()
         _force_flush()
 
-        assert is_instrumented_by(OtelInstrumentation)
+        assert is_instrumented_by(GenAiInstrumentation)
         assert _hex_id(result.trace_id, 32)
         names = [span.name for span in cloud.get_finished_spans()]
         assert 'joke' in names
 
 
 @pytest.mark.asyncio
-async def test_configure_then_enable_sends_the_action_to_cloud() -> None:
-    """configure_instrumentation then enable(): Cloud sees the action on one span."""
-    yours = OtelInstrumentation()
+async def test_configure_genai_then_enable_sends_one_span_to_cloud() -> None:
+    """configure_instrumentation(GenAiInstrumentation()) then enable(): Cloud sees one joke span."""
+    yours = GenAiInstrumentation()
     configure_instrumentation(yours)
     with _cloud_enable() as cloud:
         action = Action(name='joke', kind=ActionKind.FLOW, fn=_joke)
         result = await action.run()
         _force_flush()
 
-        assert [i for i in instrumentations if isinstance(i, OtelInstrumentation)] == [yours]
+        assert [i for i in instrumentations if isinstance(i, GenAiInstrumentation)] == [yours]
         assert _hex_id(result.trace_id, 32)
         joke = [span for span in cloud.get_finished_spans() if span.name == 'joke']
         assert len(joke) == 1
 
 
 @pytest.mark.asyncio
-async def test_configure_otel_on_a_private_provider_then_enable_does_not_send_that_action_to_cloud() -> None:
-    """Private OtelInstrumentation then enable(): Cloud hangs on the process tracer, so that action is not there."""
+async def test_configure_genai_on_a_private_tracer_then_enable_does_not_send_that_action_to_cloud() -> None:
+    """GenAI on a private tracer then enable(): Cloud hangs on the process tracer, so that action is not there."""
     private = TracerProvider()
-    configure_instrumentation(OtelInstrumentation(tracer_provider=private))
+    configure_instrumentation(GenAiInstrumentation(tracer=private.get_tracer('test')))
     with _cloud_enable() as cloud:
         action = Action(name='joke', kind=ActionKind.FLOW, fn=_joke)
         result = await action.run()
@@ -182,35 +178,21 @@ def test_enable_when_process_tracer_cannot_attach_does_not_raise() -> None:
         pass
 
 
-def test_enable_does_not_touch_a_private_provider_that_cannot_add() -> None:
-    """A dead tracer_provider= on OtelInstrumentation does not fail enable()."""
-    private = TracerProvider()
-
-    def boom(_processor: object) -> None:
-        raise RuntimeError('processor dead')
-
-    private.add_span_processor = boom  # type: ignore[method-assign]
-    configure_instrumentation(OtelInstrumentation(tracer_provider=private))
-    with _cloud_enable():
-        pass
-    private.shutdown()
-
-
 @pytest.mark.asyncio
-async def test_enable_under_genkit_start_with_force_still_adds_the_ui_poster(
+async def test_enable_under_genkit_start_still_adds_the_ui_poster(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """force_dev_export=True under genkit start turns Genkit spans on; Genkit() still adds the Traces tab poster."""
+    """force_dev_export=True under genkit start turns GenAI spans on; Genkit() still adds the Traces tab poster."""
     monkeypatch.setenv(GENKIT_ENV, 'dev')
     monkeypatch.setenv('GENKIT_TELEMETRY_SERVER', 'http://127.0.0.1:4033')
 
     with _cloud_enable(force_dev_export=True):
-        assert is_instrumented_by(OtelInstrumentation)
+        assert is_instrumented_by(GenAiInstrumentation)
 
     Genkit()
     action = Action(name='joke', kind=ActionKind.FLOW, fn=_joke)
     result = await action.run()
 
-    assert is_instrumented_by(OtelInstrumentation)
+    assert is_instrumented_by(GenAiInstrumentation)
     assert is_instrumented_by(GenkitBuiltinInstrumentation)
     assert _hex_id(result.trace_id, 32)

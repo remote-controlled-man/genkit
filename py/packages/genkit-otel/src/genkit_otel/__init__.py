@@ -14,11 +14,10 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""OpenTelemetry instrumentation for Genkit.
+"""OpenTelemetry GenAI instrumentation for Genkit.
 
 Configure ``GenAiInstrumentation`` before creating ``Genkit``. The
-application owns the OpenTelemetry SDK. ``OtelInstrumentation`` mints
-``genkit:*`` spans on the global tracer.
+application owns the OpenTelemetry SDK.
 
 ```python
 from opentelemetry import trace
@@ -44,9 +43,7 @@ to separate pipelines).
 """
 
 from genkit_otel._genai_instrumentation import GenAiInstrumentation
-from genkit_otel._provider import OtelInstrumentation
 
 __all__ = [
     'GenAiInstrumentation',
-    'OtelInstrumentation',
 ]

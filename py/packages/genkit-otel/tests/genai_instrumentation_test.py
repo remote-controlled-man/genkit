@@ -20,7 +20,7 @@ import asyncio
 from collections.abc import Mapping
 
 import pytest
-from genkit_otel import GenAiInstrumentation, OtelInstrumentation
+from genkit_otel import GenAiInstrumentation
 from genkit_otel._gen_ai_attributes import (
     GenAiAttr,
     GenkitAttr,
@@ -30,12 +30,7 @@ from opentelemetry.trace import StatusCode
 from genkit import FinishReason, Part
 from genkit._core._error import GenkitInterrupt
 from genkit._core._model import OutputConfig
-from genkit._core._telemetry._instrumentation import (
-    SpanNext,
-    configure_instrumentation,
-    reset_instrumentation,
-    run_in_new_span,
-)
+from genkit._core._telemetry._instrumentation import SpanNext
 from genkit._core._typing import GenerationUsage, Role
 from genkit.model import Candidate, Message, ModelRequest, ModelResponse
 from genkit.telemetry import SpanMetadata
@@ -414,91 +409,3 @@ async def test_cancellation_does_not_record_error_status(harness) -> None:
     assert span is not None
     assert span.status.status_code != StatusCode.ERROR
     assert not any(event.name == 'exception' for event in span.events)
-
-
-@pytest.mark.asyncio
-async def test_stacked_genai_and_otel_interrupt_coexistence(harness) -> None:
-    genai_instr = GenAiInstrumentation(
-        tracer=harness.tracer_provider.get_tracer('test'),
-        emit_tool_spans=True,
-    )
-    otel_instr = OtelInstrumentation(tracer_provider=harness.tracer_provider)
-
-    configure_instrumentation(genai_instr)
-    configure_instrumentation(otel_instr)
-
-    try:
-
-        async def tool_body(span=None):
-            raise GenkitInterrupt('approval needed')
-
-        with pytest.raises(GenkitInterrupt):
-            await run_in_new_span(
-                'transfer_money',
-                tool_body,
-                action_type='tool',
-                input={'amount': 500},
-            )
-
-        tool_span = harness.span_named('execute_tool transfer_money')
-        native_span = harness.span_named('transfer_money')
-
-        assert tool_span is not None
-        assert native_span is not None
-        assert tool_span.status.status_code != StatusCode.ERROR
-        assert harness.attr(tool_span, 'genkit.interrupted') is True
-        assert native_span.status.status_code != StatusCode.ERROR
-        assert harness.attr(native_span, 'genkit:state') == 'success'
-    finally:
-        reset_instrumentation()
-
-
-@pytest.mark.asyncio
-async def test_custom_otel_and_gcp_adjusting_exporter_isolation() -> None:
-    """A developer's custom OTel exporter receives unmutated attributes while GCP receives redacted."""
-    from genkit_otel._adjusting_exporter import AdjustingTraceExporter
-    from opentelemetry.sdk.trace import TracerProvider
-    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
-    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
-
-    provider = TracerProvider()
-    datadog_exporter = InMemorySpanExporter()
-    gcp_inner_exporter = InMemorySpanExporter()
-    gcp_adjusting_exporter = AdjustingTraceExporter(
-        exporter=gcp_inner_exporter,
-        log_input_and_output=False,
-    )
-
-    provider.add_span_processor(SimpleSpanProcessor(datadog_exporter))
-    provider.add_span_processor(SimpleSpanProcessor(gcp_adjusting_exporter))
-
-    otel_instr = OtelInstrumentation(tracer_provider=provider)
-    configure_instrumentation(otel_instr)
-
-    try:
-
-        async def action_body(span=None):
-            return {'user': 'sensitive_pii'}
-
-        await run_in_new_span('login', action_body, action_type='action', input={'password': 'secret_password'})
-
-        assert len(datadog_exporter.get_finished_spans()) == 1
-        assert len(gcp_inner_exporter.get_finished_spans()) == 1
-
-        datadog_span = datadog_exporter.get_finished_spans()[0]
-        gcp_span = gcp_inner_exporter.get_finished_spans()[0]
-
-        assert datadog_span.context is not None and gcp_span.context is not None
-        assert datadog_span.context.trace_id == gcp_span.context.trace_id
-        assert datadog_span.context.span_id == gcp_span.context.span_id
-
-        assert datadog_span.attributes is not None and gcp_span.attributes is not None
-        # GCP received redacted input/output
-        assert gcp_span.attributes['genkit/input'] == '<redacted>'
-        assert gcp_span.attributes['genkit/output'] == '<redacted>'
-
-        # Datadog received intact input/output without mutation
-        assert 'secret_password' in str(datadog_span.attributes['genkit:input'])
-        assert 'sensitive_pii' in str(datadog_span.attributes['genkit:output'])
-    finally:
-        reset_instrumentation()
