@@ -16,9 +16,8 @@
 
 """Normalize Genkit messages to the OpenTelemetry GenAI content schema.
 
-Pure mapping, no OpenTelemetry dependency. Only used when content
-capture is on — that's the leftover a later reader joins to when they
-opt into seeing the prompt and reply.
+Used only when content capture is on, so prompt and reply text stay
+off the span until the caller opts in.
 """
 
 from __future__ import annotations
@@ -125,7 +124,7 @@ def map_message(message: Message) -> dict[str, Any]:
 
 
 def normalize_messages(messages: Sequence[Message]) -> NormalizedMessages:
-    """Split system instructions out of the conversation leftover.
+    """Split system instructions out of the conversation.
 
     System messages become ``gen_ai.system_instructions`` (their parts
     directly). Everything else stays in ``gen_ai.input.messages``.
@@ -133,8 +132,7 @@ def normalize_messages(messages: Sequence[Message]) -> NormalizedMessages:
     system: list[dict[str, Any]] = []
     rest: list[dict[str, Any]] = []
     for message in messages:
-        role = message.role.value if isinstance(message.role, Role) else str(message.role)
-        if role == 'system':
+        if map_role(message.role) == 'system':
             system.extend(map_part(part) for part in message.content)
         else:
             rest.append(map_message(message))
@@ -150,20 +148,17 @@ def resolve_response_message(response: ModelResponse) -> Message | None:
     """Resolve the effective response message.
 
     Prefers the top-level ``message``. Falls back to
-    ``candidates[0].message`` so a leftover that only arrived in the
-    older candidate shape still gets captured. Missing both → ``None``.
+    ``candidates[0].message`` when the reply only arrived on the older
+    candidate shape. Missing both returns ``None``.
     """
     if response.message is not None:
         return response.message
     candidates = response.candidates
     if not candidates:
         return None
-    first = candidates[0]
-    message = first.message
+    message = candidates[0].message
     if isinstance(message, Message):
         return message
-    if isinstance(message, Mapping):
-        return Message(message)
     if message is not None:
         return Message(message)
     return None

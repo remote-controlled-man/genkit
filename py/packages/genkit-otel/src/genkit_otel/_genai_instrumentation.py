@@ -18,7 +18,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import time
@@ -122,21 +121,15 @@ class GenAiInstrumentation:
         provider = derive_provider_name(prefix)
         request = metadata.input if isinstance(metadata.input, ModelRequest) else None
 
-        attrs: dict[str, AttributeValue] = {
-            GenAiAttr.OPERATION_NAME: GenAiOperation.CHAT,
-            GenAiAttr.REQUEST_MODEL: model,
-        }
-        if provider is not None:
-            attrs[GenAiAttr.PROVIDER_NAME] = provider
-        if request is not None:
-            _add_request_config_attributes(attrs, request)
-
         metric_attrs: dict[str, AttributeValue] = {
             GenAiAttr.OPERATION_NAME: GenAiOperation.CHAT,
             GenAiAttr.REQUEST_MODEL: model,
         }
         if provider is not None:
             metric_attrs[GenAiAttr.PROVIDER_NAME] = provider
+        attrs = dict(metric_attrs)
+        if request is not None:
+            _add_request_config_attributes(attrs, request)
 
         started = time.perf_counter()
         with self._tracer.start_as_current_span(
@@ -151,15 +144,13 @@ class GenAiInstrumentation:
                 output = await next(GenAiSpanContext(span))
                 response = output if isinstance(output, ModelResponse) else None
                 if response is not None:
-                    self._add_response_attributes(span, response, failed=False)
+                    self._add_response_attributes(span, response)
                 self._maybe_capture_action_io(span, metadata.input, output)
                 if self.emit_metrics:
                     self._record_model_metrics(started, metric_attrs, response=response)
                 return output
             except GenkitInterrupt:
                 span.set_attribute('genkit.interrupted', True)
-                raise
-            except (asyncio.CancelledError, KeyboardInterrupt):
                 raise
             except Exception as exc:
                 self._record_error(span, exc)
@@ -196,8 +187,6 @@ class GenAiInstrumentation:
             except GenkitInterrupt:
                 span.set_attribute('genkit.interrupted', True)
                 raise
-            except (asyncio.CancelledError, KeyboardInterrupt):
-                raise
             except Exception as exc:
                 self._record_error(span, exc)
                 raise
@@ -224,8 +213,6 @@ class GenAiInstrumentation:
                 return output
             except GenkitInterrupt:
                 span.set_attribute('genkit.interrupted', True)
-                raise
-            except (asyncio.CancelledError, KeyboardInterrupt):
                 raise
             except Exception as exc:
                 self._record_error(span, exc)
@@ -258,14 +245,8 @@ class GenAiInstrumentation:
         _set_json_attribute(span, GenkitAttr.INPUT, input)
         _set_json_attribute(span, GenkitAttr.OUTPUT, output)
 
-    def _add_response_attributes(
-        self,
-        span: Span,
-        response: ModelResponse,
-        *,
-        failed: bool,
-    ) -> None:
-        finish_reasons = _resolve_finish_reasons(response, failed=failed)
+    def _add_response_attributes(self, span: Span, response: ModelResponse) -> None:
+        finish_reasons = _resolve_finish_reasons(response)
         if finish_reasons:
             span.set_attribute(GenAiAttr.RESPONSE_FINISH_REASONS, finish_reasons)
         usage = response.usage
@@ -387,21 +368,22 @@ def _add_request_config_attributes(attrs: dict[str, AttributeValue], request: Mo
             attrs[GenAiAttr.OUTPUT_TYPE] = output_type
 
 
-def _resolve_finish_reasons(response: ModelResponse, *, failed: bool) -> list[str]:
+def _resolve_finish_reasons(response: ModelResponse) -> list[str]:
     message = resolve_response_message(response)
     has_tool_request = any(is_tool_request_part(part) for part in (message.content if message else []))
     if has_tool_request:
-        # A turn that ends in tool calls is the more informative signal
-        # for a later reader than the generic stop reason.
+        # Tool calls are the signal a backend groups on. The model's
+        # own stop reason is less specific.
         return ['tool_calls']
     reason = response.finish_reason.value if response.finish_reason is not None else None
-    return [map_finish_reason(reason, failed=failed)]
+    return [map_finish_reason(reason, failed=False)]
 
 
 def _config_map(config: object) -> dict[str, object]:
     if config is None:
         return {}
     if isinstance(config, BaseModel):
+        # Both shapes show up: wire names (topP) and Python names (top_p).
         dumped = config.model_dump(by_alias=True, exclude_none=True)
         dumped.update(config.model_dump(by_alias=False, exclude_none=True))
         return dumped

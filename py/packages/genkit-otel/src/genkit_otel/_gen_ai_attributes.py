@@ -16,12 +16,9 @@
 
 """Map Genkit model calls onto OpenTelemetry GenAI attribute names.
 
-Pure helpers, no OpenTelemetry imports, so the leftover a later reader
-joins to — provider, model, finish reason, output type — can be tested
-without spinning up a tracer.
+Provider, model, finish reason, and output type are plain functions, so
+tests can check them without a tracer.
 """
-
-from __future__ import annotations
 
 
 class GenAiAttr:
@@ -139,8 +136,7 @@ def map_finish_reason(genkit_reason: str | None, *, failed: bool) -> str:
     if genkit_reason == 'blocked':
         return 'content_filter'
     if genkit_reason == 'interrupted':
-        # An interrupted turn still produced a usable leftover; treat it
-        # as a normal stop rather than an error.
+        # The caller still has the partial reply, so the span says stop.
         return 'stop'
     if failed:
         return 'error'

@@ -456,11 +456,10 @@ async def test_stacked_genai_and_otel_interrupt_coexistence(harness) -> None:
 @pytest.mark.asyncio
 async def test_custom_otel_and_gcp_adjusting_exporter_isolation() -> None:
     """A developer's custom OTel exporter receives unmutated attributes while GCP receives redacted."""
+    from genkit_otel._adjusting_exporter import AdjustingTraceExporter
     from opentelemetry.sdk.trace import TracerProvider
     from opentelemetry.sdk.trace.export import SimpleSpanProcessor
     from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
-
-    from genkit_otel._adjusting_exporter import AdjustingTraceExporter
 
     provider = TracerProvider()
     datadog_exporter = InMemorySpanExporter()
