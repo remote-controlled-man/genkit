@@ -27,6 +27,7 @@ from collections.abc import Mapping
 from typing import Any
 
 import structlog
+from genkit_otel import OtelInstrumentation
 from opentelemetry import metrics, trace as trace_api
 from opentelemetry.exporter.cloud_monitoring import CloudMonitoringMetricsExporter
 from opentelemetry.resourcedetector.gcp_resource_detector import GoogleCloudResourceDetector
@@ -38,7 +39,9 @@ from opentelemetry.sdk.trace.export import BatchSpanProcessor, SimpleSpanProcess
 from opentelemetry.sdk.trace.sampling import Sampler
 from opentelemetry.trace import get_current_span, span as trace_span
 
+from genkit._core._telemetry._instrumentation import is_instrumented_by
 from genkit.plugin_api import is_dev_environment
+from genkit.telemetry import configure_instrumentation
 
 from .constants import (
     DEFAULT_METRIC_EXPORT_INTERVAL_MS,
@@ -264,6 +267,9 @@ class GcpTelemetry:
             )
 
             _hang_exporter_on_process_tracer(exporter=trace_exporter)
+            if is_instrumented_by(OtelInstrumentation):
+                return
+            configure_instrumentation(OtelInstrumentation())
         except Exception as e:
             handle_tracing_error(e)
 
