@@ -8,8 +8,6 @@ It provides:
 
 Pass `tracer_provider` to mint on that provider instead of the process-global one.
 
-Cloud Trace is `enable_google_cloud_telemetry()` from `genkit_google_cloud`. `genkit start` records to the Developer UI without this package. `uv add genkit` does not install OpenTelemetry.
-
 ## GenAI Semantic Conventions Instrumentation
 
 Plugs into Genkit's pluggable instrumentation system and emits telemetry that follows the
