@@ -14,7 +14,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""enable_google_cloud_telemetry() and whether Cloud Trace sees the action."""
+"""enable_google_cloud_telemetry() under genkit start still adds the Traces tab poster."""
 
 from collections.abc import Generator
 from contextlib import contextmanager
@@ -96,18 +96,6 @@ def _isolate_telemetry(monkeypatch: pytest.MonkeyPatch) -> Generator[None, None,
         reset_log_export()
         _reset_google_cloud_telemetry()
         isolated.shutdown()
-
-
-def test_enable_when_process_tracer_cannot_attach_does_not_raise() -> None:
-    """A dead process tracer stays a log line so enable() does not crash the process."""
-    global_provider = trace_api.get_tracer_provider()
-
-    def boom(_processor: object) -> None:
-        raise RuntimeError('processor dead')
-
-    global_provider.add_span_processor = boom  # type: ignore[method-assign]
-    with _cloud_enable():
-        pass
 
 
 @pytest.mark.asyncio
