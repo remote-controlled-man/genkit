@@ -11,11 +11,6 @@ import logging
 from collections.abc import Generator, Sequence
 
 import pytest
-from genkit_otel import OtelInstrumentation
-from opentelemetry import trace as trace_api
-from opentelemetry.sdk.trace import ReadableSpan, TracerProvider
-from opentelemetry.sdk.trace.export import SimpleSpanProcessor
-from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 from pydantic import BaseModel
 
 from genkit import ActionKind, Genkit
@@ -26,11 +21,10 @@ from genkit._core._telemetry._attrs import metadata_key
 from genkit._core._telemetry._instrumentation import (
     SpanMetadata,
     parent_path_context,
-    reset_instrumentation,
     run_in_new_span,
     start_attributes,
 )
-from genkit.telemetry import configure_instrumentation
+from genkit._core._telemetry.http import ActiveSpan
 
 
 @pytest.fixture(autouse=True)
@@ -43,26 +37,7 @@ def _reset_parent_path() -> Generator[None, None, None]:
         parent_path_context.reset(token)
 
 
-@pytest.fixture
-def exporter() -> Generator[InMemorySpanExporter, None, None]:
-    """In-memory exporter plus the OTel renderer (default-off otherwise)."""
-    provider = trace_api.get_tracer_provider()
-    if not isinstance(provider, TracerProvider):
-        provider = TracerProvider()
-        trace_api.set_tracer_provider(provider)
-    exp = InMemorySpanExporter()
-    processor = SimpleSpanProcessor(exp)
-    provider.add_span_processor(processor)
-    reset_instrumentation()
-    configure_instrumentation(OtelInstrumentation(tracer_provider=provider))
-    try:
-        yield exp
-    finally:
-        exp.clear()
-        reset_instrumentation()
-
-
-def _by_name(spans: Sequence[ReadableSpan], name: str) -> ReadableSpan:
+def _by_name(spans: Sequence[ActiveSpan], name: str) -> ActiveSpan:
     matches = [s for s in spans if s.name == name]
     assert matches, f'no span named {name!r} in {[s.name for s in spans]}'
     return matches[-1]
@@ -114,7 +89,7 @@ def test_start_attributes_json_init() -> None:
 
 
 @pytest.mark.asyncio
-async def test_writes_name_path_and_state_success(exporter: InMemorySpanExporter) -> None:
+async def test_writes_name_path_and_state_success(exporter) -> None:
     """A successful span has name, path, and state=success."""
 
     async def body(_span: object) -> None:
@@ -133,7 +108,7 @@ async def test_writes_name_path_and_state_success(exporter: InMemorySpanExporter
 
 
 @pytest.mark.asyncio
-async def test_writes_input_from_metadata(exporter: InMemorySpanExporter) -> None:
+async def test_writes_input_from_metadata(exporter) -> None:
     class Payload(BaseModel):
         msg: str
 
@@ -150,7 +125,7 @@ async def test_writes_input_from_metadata(exporter: InMemorySpanExporter) -> Non
 
 
 @pytest.mark.asyncio
-async def test_writes_init_from_metadata(exporter: InMemorySpanExporter) -> None:
+async def test_writes_init_from_metadata(exporter) -> None:
     async def body(_span: object) -> None:
         return None
 
@@ -162,7 +137,7 @@ async def test_writes_init_from_metadata(exporter: InMemorySpanExporter) -> None
 
 
 @pytest.mark.asyncio
-async def test_writes_output_from_return_value_on_success(exporter: InMemorySpanExporter) -> None:
+async def test_writes_output_from_return_value_on_success(exporter) -> None:
     async def body(_span: object) -> dict[str, int]:
         return {'result': 42}
 
@@ -175,7 +150,7 @@ async def test_writes_output_from_return_value_on_success(exporter: InMemorySpan
 
 
 @pytest.mark.asyncio
-async def test_records_error_attributes(exporter: InMemorySpanExporter) -> None:
+async def test_records_error_attributes(exporter) -> None:
     async def body(_span: object) -> None:
         raise RuntimeError('boom')
 
@@ -186,13 +161,11 @@ async def test_records_error_attributes(exporter: InMemorySpanExporter) -> None:
     attrs = dict(span.attributes or {})
     assert attrs['genkit:state'] == 'error'
     assert attrs['genkit:error'] == 'boom'
-    assert span.status.status_code == trace_api.StatusCode.ERROR
+    assert span.status_code == 2
 
 
 @pytest.mark.asyncio
-async def test_cancelled_span_leaves_state_unset(
-    exporter: InMemorySpanExporter, caplog: pytest.LogCaptureFixture
-) -> None:
+async def test_cancelled_span_leaves_state_unset(exporter, caplog: pytest.LogCaptureFixture) -> None:
     """Abort/timeout is unfinished work — neither success nor error."""
 
     async def body(_span: object) -> None:
@@ -206,14 +179,12 @@ async def test_cancelled_span_leaves_state_unset(
     attrs = dict(span.attributes or {})
     assert 'genkit:state' not in attrs
     assert 'genkit:error' not in attrs
-    assert span.status.status_code != trace_api.StatusCode.ERROR
+    assert span.status_code != 2
     assert not any('Error in run_in_new_span' in r.message for r in caplog.records)
 
 
 @pytest.mark.asyncio
-async def test_tool_interrupt_is_not_recorded_as_span_error(
-    exporter: InMemorySpanExporter, caplog: pytest.LogCaptureFixture
-) -> None:
+async def test_tool_interrupt_is_not_recorded_as_span_error(exporter, caplog: pytest.LogCaptureFixture) -> None:
     """Tool interrupts are control flow — the tool span must not look like a failure.
 
     Drives a real ``@ai.tool`` that raises ``Interrupt``. The carve-out only
@@ -239,13 +210,13 @@ async def test_tool_interrupt_is_not_recorded_as_span_error(
     attrs = dict(span.attributes or {})
     assert attrs['genkit:state'] == 'success'
     assert 'genkit:error' not in attrs
-    assert span.status.status_code != trace_api.StatusCode.ERROR
+    assert span.status_code != 2
     assert json.loads(attrs['genkit:metadata:interrupt']) == {'reason': 'needs_approval'}
     assert not any('Error in run_in_new_span' in r.message for r in caplog.records)
 
 
 @pytest.mark.asyncio
-async def test_nested_path_inherits_parent_qualified_path(exporter: InMemorySpanExporter) -> None:
+async def test_nested_path_inherits_parent_qualified_path(exporter) -> None:
     async def inner(_span: object) -> None:
         return None
 
@@ -261,7 +232,7 @@ async def test_nested_path_inherits_parent_qualified_path(exporter: InMemorySpan
 
 @pytest.mark.asyncio
 async def test_metadata_metadata_dict_is_flattened_and_telemetry_labels_pass_through(
-    exporter: InMemorySpanExporter,
+    exporter,
 ) -> None:
     async def body(_span: object) -> None:
         return None
@@ -283,7 +254,7 @@ async def test_metadata_metadata_dict_is_flattened_and_telemetry_labels_pass_thr
 
 
 @pytest.mark.asyncio
-async def test_action_span_metadata_uses_short_keys(exporter: InMemorySpanExporter) -> None:
+async def test_action_span_metadata_uses_short_keys(exporter) -> None:
     """``Action.span_metadata`` uses short keys; ``run_in_new_span`` adds ``genkit:metadata:`` once.
 
     Locks in the simplified contract introduced alongside this refactor: framework call
@@ -309,7 +280,7 @@ async def test_action_span_metadata_uses_short_keys(exporter: InMemorySpanExport
 
 
 @pytest.mark.asyncio
-async def test_action_error_attribute_keeps_original_text(exporter: InMemorySpanExporter) -> None:
+async def test_action_error_attribute_keeps_original_text(exporter) -> None:
     """Regression: the action span should record ``str(original_e)`` in ``genkit:error``,
 
     not the wrapped GenkitError's ``"Error while running action ..."`` message. This
@@ -335,7 +306,7 @@ async def test_action_error_attribute_keeps_original_text(exporter: InMemorySpan
 
 
 @pytest.mark.asyncio
-async def test_action_context_telemetry_sanitizes_unserializable(exporter: InMemorySpanExporter) -> None:
+async def test_action_context_telemetry_sanitizes_unserializable(exporter) -> None:
     """Verify that unserializable values in action context are dropped from tracing metadata.
 
     Also verify that JSON-serializable values are kept.
@@ -389,7 +360,7 @@ async def test_action_context_telemetry_sanitizes_unserializable(exporter: InMem
 
 
 @pytest.mark.asyncio
-async def test_action_context_telemetry_redacts_auth_and_secrets(exporter: InMemorySpanExporter) -> None:
+async def test_action_context_telemetry_redacts_auth_and_secrets(exporter) -> None:
     """The Context panel hides identity and keys. The live action still sees them."""
     seen: dict[str, object] = {}
 
@@ -429,7 +400,7 @@ async def test_action_context_telemetry_redacts_auth_and_secrets(exporter: InMem
 
 
 @pytest.mark.asyncio
-async def test_action_context_telemetry_whole_bag_redaction(exporter: InMemorySpanExporter) -> None:
+async def test_action_context_telemetry_whole_bag_redaction(exporter) -> None:
     """Top-level auth and secrets bags are replaced in full regardless of key names."""
 
     async def noop(_input: object, _ctx: ActionRunContext) -> str:
@@ -461,7 +432,7 @@ async def test_action_context_telemetry_whole_bag_redaction(exporter: InMemorySp
 
 
 @pytest.mark.asyncio
-async def test_action_context_telemetry_circular_references(exporter: InMemorySpanExporter) -> None:
+async def test_action_context_telemetry_circular_references(exporter) -> None:
     """Verify that circular references inside the context are proactively detected and dropped."""
 
     async def noop() -> str:

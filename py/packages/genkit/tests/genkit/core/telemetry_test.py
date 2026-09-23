@@ -3,7 +3,7 @@
 # Copyright 2026 Google LLC
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for genkit.telemetry and the OpenTelemetry backend."""
+"""What configure_instrumentation and genkit start do to trace ids."""
 
 from __future__ import annotations
 
@@ -11,20 +11,15 @@ import asyncio
 import os
 import subprocess  # noqa: S404
 import sys
-import threading
-from collections.abc import Awaitable, Callable, Generator, Mapping
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from collections.abc import Awaitable, Callable, Generator
 from typing import Any, TypeVar
 
 import pytest
-from genkit_otel import OtelInstrumentation
-from genkit_otel._exporters import init_provider, tracer
 from httpx import ASGITransport, AsyncClient
 from opentelemetry import trace as trace_api
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
-from opentelemetry.trace import NoOpTracerProvider
 
 from genkit import ActionKind, Genkit
 from genkit._core._action import Action
@@ -32,7 +27,6 @@ from genkit._core._environment import GENKIT_ENV
 from genkit._core._reflection import create_reflection_asgi_app
 from genkit._core._registry import Registry
 from genkit._core._telemetry._instrumentation import (
-    Instrumentation,
     NoopSpanContext,
     SpanContext,
     SpanMetadata,
@@ -45,10 +39,7 @@ from genkit._core._telemetry._instrumentation import (
     set_span_state,
 )
 from genkit._core._telemetry._log_exporter import reset_log_export
-from genkit._core._telemetry.http import (
-    GenkitBuiltinInstrumentation,
-    flush_direct_http_instrumentations,
-)
+from genkit._core._telemetry.http import GenkitBuiltinInstrumentation
 from genkit.telemetry import configure_instrumentation
 
 T = TypeVar('T')
@@ -56,29 +47,6 @@ T = TypeVar('T')
 
 def _hex_id(value: str, length: int) -> bool:
     return len(value) == length and all(c in '0123456789abcdef' for c in value)
-
-
-def _flush_exporters_in_provider(provider: TracerProvider) -> None:
-    active = getattr(provider, '_active_span_processor', None)
-    if active is None:
-        return
-    processors = getattr(active, '_span_processors', [active])
-    for proc in processors:
-        exp = getattr(proc, 'span_exporter', None) or getattr(proc, 'exporter', None)
-        if exp is not None and hasattr(exp, 'force_flush'):
-            exp.force_flush()
-
-
-def _force_flush() -> None:
-    flush_direct_http_instrumentations()
-    for inst in instrumentations:
-        if isinstance(inst, OtelInstrumentation) and inst._tracer_provider is not None:
-            inst._tracer_provider.force_flush()
-            _flush_exporters_in_provider(inst._tracer_provider)
-    provider = trace_api.get_tracer_provider()
-    if isinstance(provider, TracerProvider):
-        provider.force_flush()
-        _flush_exporters_in_provider(provider)
 
 
 async def _joke() -> str:
@@ -122,7 +90,6 @@ async def test_a_plain_script_returns_an_answer_and_no_trace_ids() -> None:
     assert result.response == 'Why did the cat cross the road?'
     assert result.trace_id == ''
     assert result.span_id == ''
-    assert not is_instrumented_by(OtelInstrumentation)
     assert not is_instrumented_by(GenkitBuiltinInstrumentation)
 
 
@@ -139,20 +106,23 @@ async def test_genkit_start_gives_the_developer_ui_real_trace_ids(
     result = await action.run()
 
     assert is_instrumented_by(GenkitBuiltinInstrumentation)
-    assert not is_instrumented_by(OtelInstrumentation)
     assert _hex_id(result.trace_id, 32)
     assert _hex_id(result.span_id, 16)
 
 
 @pytest.mark.asyncio
-async def test_configuring_otel_yourself_in_dev_stacks_dev_instrumentation(
+async def test_configuring_a_backend_yourself_in_dev_still_adds_the_ui_poster(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """configure_instrumentation(OtelInstrumentation()) in dev still adds the UI poster."""
+    """configure_instrumentation in dev still adds the UI poster."""
     monkeypatch.setenv(GENKIT_ENV, 'dev')
     monkeypatch.setenv('GENKIT_TELEMETRY_SERVER', 'http://127.0.0.1:4033')
 
-    yours = OtelInstrumentation()
+    class AlreadyOn:
+        async def run_in_new_span(self, metadata: SpanMetadata, next: Callable[..., Awaitable[T]]) -> T:
+            return await next()
+
+    yours = AlreadyOn()
     configure_instrumentation(yours)
     Genkit()
 
@@ -170,24 +140,7 @@ async def test_an_exporter_on_the_process_tracer_does_not_create_spans() -> None
     result = await action.run()
 
     assert result.trace_id == ''
-    assert not is_instrumented_by(OtelInstrumentation)
     assert not exporter.get_finished_spans()
-
-
-@pytest.mark.asyncio
-async def test_configure_then_export_sends_spans_to_your_backend() -> None:
-    """configure_instrumentation then an exporter: real ids, and the backend sees the span."""
-    provider = TracerProvider()
-    exporter = InMemorySpanExporter()
-    provider.add_span_processor(SimpleSpanProcessor(exporter))
-    configure_instrumentation(OtelInstrumentation(tracer_provider=provider))
-
-    action = Action(name='joke', kind=ActionKind.FLOW, fn=_joke)
-    result = await action.run()
-
-    assert _hex_id(result.trace_id, 32)
-    names = [span.name for span in exporter.get_finished_spans()]
-    assert 'joke' in names
 
 
 @pytest.mark.asyncio
@@ -201,7 +154,6 @@ async def test_dev_without_a_collector_stays_untraced(
     action = Action(name='joke', kind=ActionKind.FLOW, fn=_joke)
     result = await action.run()
 
-    assert not is_instrumented_by(OtelInstrumentation)
     assert result.trace_id == ''
     assert result.span_id == ''
 
@@ -219,73 +171,8 @@ async def test_hanging_an_exporter_after_genkit_does_not_turn_tracing_on(
     action = Action(name='joke', kind=ActionKind.FLOW, fn=_joke)
     result = await action.run()
 
-    assert not is_instrumented_by(OtelInstrumentation)
     assert result.trace_id == ''
     assert not exporter.get_finished_spans()
-
-
-def test_init_provider_does_not_rewrite_log_format(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Booting a tracer must not clobber the process log format."""
-    monkeypatch.setattr(trace_api, 'get_tracer_provider', lambda: NoOpTracerProvider())
-    created: list[object] = []
-    monkeypatch.setattr(trace_api, 'set_tracer_provider', lambda provider: created.append(provider))
-
-    seen: dict[str, bool] = {}
-
-    class FakeInstrumentor:
-        def instrument(self, *, set_logging_format: bool) -> None:
-            seen['set_logging_format'] = set_logging_format
-
-    monkeypatch.setattr(
-        'genkit_otel._exporters.LoggingInstrumentor',
-        FakeInstrumentor,
-    )
-    init_provider()
-    assert seen['set_logging_format'] is False
-    assert created
-
-
-def _start_collector() -> tuple[HTTPServer, list[str]]:
-    received: list[str] = []
-
-    class Handler(BaseHTTPRequestHandler):
-        def do_POST(self) -> None:  # noqa: N802
-            n = int(self.headers.get('Content-Length', '0'))
-            received.append(self.rfile.read(n).decode())
-            self.send_response(200)
-            self.end_headers()
-
-        def log_message(self, format: str, *args: Any) -> None:
-            return
-
-    server = HTTPServer(('127.0.0.1', 0), Handler)
-    threading.Thread(target=server.serve_forever, daemon=True).start()
-    return server, received
-
-
-@pytest.mark.asyncio
-async def test_tracer_does_not_record_when_tracing_is_off() -> None:
-    """genkit_otel.tracer opens a no-op span when nothing is configured."""
-    with tracer.start_as_current_span('generate_images') as span:
-        ctx = span.get_span_context()
-        assert ctx.trace_id == 0
-
-
-@pytest.mark.asyncio
-async def test_tracer_records_on_their_tracer_provider() -> None:
-    """OtelInstrumentation(tracer_provider=theirs): tracer writes to theirs."""
-    theirs = TracerProvider()
-    cloud = InMemorySpanExporter()
-    theirs.add_span_processor(SimpleSpanProcessor(cloud))
-    configure_instrumentation(OtelInstrumentation(tracer_provider=theirs))
-
-    with tracer.start_as_current_span('generate_images'):
-        pass
-    theirs.force_flush()
-
-    names = [span.name for span in cloud.get_finished_spans()]
-    assert 'generate_images' in names
-    theirs.shutdown()
 
 
 def test_importing_genkit_does_not_start_a_tracer() -> None:
@@ -293,12 +180,10 @@ def test_importing_genkit_does_not_start_a_tracer() -> None:
     script = """
 from opentelemetry import trace
 from genkit import Genkit  # noqa: F401
-from genkit_otel._exporters import is_placeholder_provider
-from genkit._core._telemetry._instrumentation import is_instrumented_by
-from genkit_otel import OtelInstrumentation
+from opentelemetry.trace import ProxyTracerProvider, NoOpTracerProvider
 
-assert not is_instrumented_by(OtelInstrumentation)
-assert is_placeholder_provider(trace.get_tracer_provider())
+provider = trace.get_tracer_provider()
+assert isinstance(provider, (ProxyTracerProvider, NoOpTracerProvider))
 """
     env = {k: v for k, v in os.environ.items() if k not in {GENKIT_ENV, 'GENKIT_TELEMETRY_SERVER'}}
     completed = subprocess.run(  # noqa: S603
@@ -340,7 +225,7 @@ async def test_production_unconfigured_genkit_does_not_leak_into_host_otel(
 async def test_dev_mode_never_claims_or_mutates_global_tracer_provider(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Dev instrumentation uses an isolated TracerProvider and never mutates global OTel."""
+    """Dev instrumentation never mutates global OTel."""
     monkeypatch.setenv(GENKIT_ENV, 'dev')
     monkeypatch.setenv('GENKIT_TELEMETRY_SERVER', 'http://127.0.0.1:4033')
 
@@ -356,41 +241,8 @@ async def test_dev_mode_never_claims_or_mutates_global_tracer_provider(
 
 
 @pytest.mark.asyncio
-async def test_dev_mode_with_custom_apm_separates_dev_and_remote_exporters(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Dev UI and remote APM both receive clean spans via isolated providers."""
-    monkeypatch.setenv(GENKIT_ENV, 'dev')
-    server, posts = _start_collector()
-    dev_url = f'http://127.0.0.1:{server.server_address[1]}'
-    monkeypatch.setenv('GENKIT_TELEMETRY_SERVER', dev_url)
-
-    try:
-        remote_exporter = InMemorySpanExporter()
-        remote_provider = TracerProvider()
-        remote_provider.add_span_processor(SimpleSpanProcessor(remote_exporter))
-        configure_instrumentation(OtelInstrumentation(tracer_provider=remote_provider))
-
-        Genkit()
-        action = Action(name='joke', kind=ActionKind.FLOW, fn=_joke)
-        result = await action.run()
-        _force_flush()
-
-        assert _hex_id(result.trace_id, 32)
-        assert posts
-        remote_spans = [s.name for s in remote_exporter.get_finished_spans()]
-        assert 'joke' in remote_spans
-    finally:
-        server.shutdown()
-
-
-@pytest.mark.asyncio
-async def test_nested_flow_model_tool_shares_trace_id_and_parent_links() -> None:
-    """Nested actions maintain the same trace_id and correct parent_span_id links."""
-    provider = TracerProvider()
-    exporter = InMemorySpanExporter()
-    provider.add_span_processor(SimpleSpanProcessor(exporter))
-    configure_instrumentation(OtelInstrumentation(tracer_provider=provider))
+async def test_nested_flow_and_step_share_trace_id(exporter) -> None:
+    """Nested actions maintain the same trace_id and different span ids."""
 
     async def step_fn() -> str:
         return 'step_ok'
@@ -404,29 +256,18 @@ async def test_nested_flow_model_tool_shares_trace_id_and_parent_links() -> None
     flow_action = Action(name='flowAction', kind=ActionKind.FLOW, fn=flow_fn)
     result = await flow_action.run()
 
-    provider.force_flush()
     spans = exporter.get_finished_spans()
-    assert len(spans) == 2
-
     flow_span = next(s for s in spans if s.name == 'flowAction')
     step_span = next(s for s in spans if s.name == 'stepAction')
 
-    flow_ctx = flow_span.context
-    step_ctx = step_span.context
-    assert flow_ctx is not None and step_ctx is not None
-    assert flow_ctx.trace_id == step_ctx.trace_id
-    assert format(flow_ctx.trace_id, '032x') == result.trace_id
-    assert step_span.parent is not None
-    assert step_span.parent.span_id == flow_ctx.span_id
+    assert flow_span.trace_id == step_span.trace_id
+    assert flow_span.trace_id == result.trace_id
+    assert step_span.parent_span_id == flow_span.span_id
 
 
 @pytest.mark.asyncio
-async def test_concurrent_flows_maintain_independent_trace_trees() -> None:
-    """Concurrent flows in asyncio.gather keep independent trace IDs and trees."""
-    provider = TracerProvider()
-    exporter = InMemorySpanExporter()
-    provider.add_span_processor(SimpleSpanProcessor(exporter))
-    configure_instrumentation(OtelInstrumentation(tracer_provider=provider))
+async def test_concurrent_flows_maintain_independent_trace_trees(exporter) -> None:
+    """Concurrent flows in asyncio.gather keep independent trace IDs."""
 
     async def flow1_fn() -> str:
         await asyncio.sleep(0.01)
@@ -445,23 +286,15 @@ async def test_concurrent_flows_maintain_independent_trace_trees() -> None:
     assert _hex_id(res2.trace_id, 32)
     assert res1.trace_id != res2.trace_id
 
-    provider.force_flush()
     spans = exporter.get_finished_spans()
     span1 = next(s for s in spans if s.name == 'flow1')
     span2 = next(s for s in spans if s.name == 'flow2')
-    s1_ctx = span1.context
-    s2_ctx = span2.context
-    assert s1_ctx is not None and s2_ctx is not None
-    assert s1_ctx.trace_id != s2_ctx.trace_id
+    assert span1.trace_id != span2.trace_id
 
 
 @pytest.mark.asyncio
-async def test_run_in_new_span_snapshots_providers_against_concurrent_mutation() -> None:
+async def test_run_in_new_span_snapshots_providers_against_concurrent_mutation(exporter) -> None:
     """Mutating instrumentations while a span runs does not affect the active span."""
-    provider = TracerProvider()
-    exporter = InMemorySpanExporter()
-    provider.add_span_processor(SimpleSpanProcessor(exporter))
-    configure_instrumentation(OtelInstrumentation(tracer_provider=provider))
 
     async def body(_span: object) -> str:
         reset_instrumentation()
@@ -470,25 +303,14 @@ async def test_run_in_new_span_snapshots_providers_against_concurrent_mutation()
     res = await run_in_new_span('in_flight', body, action_type='flow')
     assert res == 'mutated'
 
-    provider.force_flush()
     spans = exporter.get_finished_spans()
     assert len(spans) == 1
     assert spans[0].name == 'in_flight'
 
 
 @pytest.mark.asyncio
-async def test_set_custom_metadata_stamps_all_instrumentations_for_current_action() -> None:
-    """set_custom_metadata_attributes fans out to all active provider spans."""
-    p1 = TracerProvider()
-    e1 = InMemorySpanExporter()
-    p1.add_span_processor(SimpleSpanProcessor(e1))
-
-    p2 = TracerProvider()
-    e2 = InMemorySpanExporter()
-    p2.add_span_processor(SimpleSpanProcessor(e2))
-
-    configure_instrumentation(OtelInstrumentation(tracer_provider=p1))
-    configure_instrumentation(OtelInstrumentation(tracer_provider=p2))
+async def test_set_custom_metadata_stamps_the_active_span(exporter) -> None:
+    """set_custom_metadata_attributes writes onto the active span."""
 
     async def flow_fn() -> str:
         set_custom_metadata_attributes({'user_id': 'user_42', 'tier': 'enterprise'})
@@ -497,16 +319,9 @@ async def test_set_custom_metadata_stamps_all_instrumentations_for_current_actio
     action = Action(name='metaFlow', kind=ActionKind.FLOW, fn=flow_fn)
     await action.run()
 
-    p1.force_flush()
-    p2.force_flush()
-
-    s1 = e1.get_finished_spans()[0]
-    s2 = e2.get_finished_spans()[0]
-
-    assert s1.attributes is not None and s1.attributes['genkit:metadata:user_id'] == 'user_42'
-    assert s1.attributes is not None and s1.attributes['genkit:metadata:tier'] == 'enterprise'
-    assert s2.attributes is not None and s2.attributes['genkit:metadata:user_id'] == 'user_42'
-    assert s2.attributes is not None and s2.attributes['genkit:metadata:tier'] == 'enterprise'
+    span = next(s for s in exporter.get_finished_spans() if s.name == 'metaFlow')
+    assert span.attributes['genkit:metadata:user_id'] == 'user_42'
+    assert span.attributes['genkit:metadata:tier'] == 'enterprise'
 
 
 def test_set_custom_metadata_is_noop_outside_action() -> None:
@@ -520,17 +335,14 @@ def test_set_span_state_is_noop_outside_action() -> None:
 
 
 @pytest.mark.asyncio
-async def test_failing_custom_provider_does_not_break_other_providers() -> None:
+async def test_failing_custom_provider_does_not_break_other_providers(exporter) -> None:
     """A throwing custom provider span does not crash other providers or action execution."""
-    p1 = TracerProvider()
-    e1 = InMemorySpanExporter()
-    p1.add_span_processor(SimpleSpanProcessor(e1))
 
     class BrokenSpan(NoopSpanContext):
-        def set_metadata(self, metadata: Mapping[str, object]) -> None:
+        def set_metadata(self, metadata: object) -> None:
             raise RuntimeError('custom provider metadata crash')
 
-    class BrokenInstrumentation(Instrumentation):
+    class BrokenInstrumentation:
         async def run_in_new_span(
             self,
             metadata: SpanMetadata,
@@ -538,7 +350,6 @@ async def test_failing_custom_provider_does_not_break_other_providers() -> None:
         ) -> T:
             return await next(BrokenSpan())
 
-    configure_instrumentation(OtelInstrumentation(tracer_provider=p1))
     configure_instrumentation(BrokenInstrumentation())
 
     async def flow_fn() -> str:
@@ -549,10 +360,8 @@ async def test_failing_custom_provider_does_not_break_other_providers() -> None:
     result = await action.run()
 
     assert result.response == 'success'
-    p1.force_flush()
-    spans = e1.get_finished_spans()
-    assert len(spans) == 1
-    assert spans[0].attributes is not None and spans[0].attributes['genkit:metadata:custom'] == 'val'
+    span = next(s for s in exporter.get_finished_spans() if s.name == 'failingProviderFlow')
+    assert span.attributes['genkit:metadata:custom'] == 'val'
 
 
 @pytest.mark.asyncio

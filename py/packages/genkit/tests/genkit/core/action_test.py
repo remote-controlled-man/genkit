@@ -9,8 +9,6 @@ import json
 from typing import Any, cast
 
 import pytest
-from genkit_otel import OtelInstrumentation
-from genkit_otel._exporters import init_provider
 from pydantic import BaseModel, ConfigDict
 
 from genkit import Message, ModelRequest, Part
@@ -28,8 +26,6 @@ from genkit._core._action import (
 )
 from genkit._core._error import GenkitError, RuntimeErrorReason
 from genkit._core._model import OutputConfig
-from genkit._core._telemetry._instrumentation import reset_instrumentation
-from genkit.telemetry import configure_instrumentation
 
 
 def test_action_enum_behaves_like_str() -> None:
@@ -271,21 +267,15 @@ async def test_action_raises_errors() -> None:
 
 
 @pytest.mark.asyncio
-async def test_action_error_includes_trace_id_when_instrumented() -> None:
-    reset_instrumentation()
-    configure_instrumentation(OtelInstrumentation(tracer_provider=init_provider()))
-    try:
+async def test_action_error_includes_trace_id_when_instrumented(hex_ids) -> None:
+    async def foo(_: str | None, ctx: ActionRunContext) -> None:
+        raise Exception('oops')
 
-        async def foo(_: str | None, ctx: ActionRunContext) -> None:
-            raise Exception('oops')
-
-        action = Action(name='fooAction', kind=ActionKind.CUSTOM, fn=foo)
-        with pytest.raises(GenkitError) as e:
-            await action.run()
-        assert e.value.trace_id
-        assert 'trace_id' in e.value.details
-    finally:
-        reset_instrumentation()
+    action = Action(name='fooAction', kind=ActionKind.CUSTOM, fn=foo)
+    with pytest.raises(GenkitError) as e:
+        await action.run()
+    assert e.value.trace_id
+    assert 'trace_id' in e.value.details
 
 
 @pytest.mark.asyncio

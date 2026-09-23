@@ -44,9 +44,8 @@ dependencies = [
   "genkit>=0.11.0",
   "opentelemetry-api>=1.29.0",
   "opentelemetry-sdk>=1.29.0",
-  "opentelemetry-instrumentation-logging>=0.60b1",
 ]
-description = "OpenTelemetry backend for Genkit traces"
+description = "Cloud Trace span adjuster for Genkit"
 keywords = [
   "genkit",
   "opentelemetry",

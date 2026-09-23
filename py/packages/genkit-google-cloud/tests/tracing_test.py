@@ -27,12 +27,11 @@ from genkit_google_cloud.telemetry.tracing import (
     _reset_google_cloud_telemetry,
     enable_google_cloud_telemetry,
 )
-from genkit_otel import OtelInstrumentation
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor, SimpleSpanProcessor
 
 from genkit._core._error import GenkitError
-from genkit._core._telemetry._instrumentation import is_instrumented_by, reset_instrumentation
+from genkit._core._telemetry._instrumentation import reset_instrumentation
 from genkit._core._telemetry._log_exporter import reset_log_export
 
 # Environment variable and value constants (matching genkit._core._environment)
@@ -149,7 +148,6 @@ def test_enable_google_cloud_telemetry_skips_in_dev_without_force() -> None:
         # Verify nothing was called
         mock_gcp_exporter.assert_not_called()
         mock_add_exporter.assert_not_called()
-        assert not is_instrumented_by(OtelInstrumentation)
 
 
 def test_enable_google_cloud_telemetry_exports_in_dev_with_force() -> None:
@@ -169,7 +167,6 @@ def test_enable_google_cloud_telemetry_exports_in_dev_with_force() -> None:
 
         mock_gcp_exporter.assert_called_once()
         mock_add_exporter.assert_called_once()
-        assert is_instrumented_by(OtelInstrumentation)
 
 
 def test_enable_google_cloud_telemetry_disable_traces() -> None:
@@ -190,7 +187,6 @@ def test_enable_google_cloud_telemetry_disable_traces() -> None:
         # Verify trace exporter was NOT created
         mock_gcp_exporter.assert_not_called()
         mock_add_exporter.assert_not_called()
-        assert not is_instrumented_by(OtelInstrumentation)
 
 
 def test_enable_google_cloud_telemetry_disable_metrics() -> None:
@@ -406,7 +402,6 @@ def test_leftover_collector_env_in_prod_does_not_block_cloud() -> None:
         patch('genkit_google_cloud.telemetry.config.metrics'),
     ):
         enable_google_cloud_telemetry(project_id='my-project')
-        assert is_instrumented_by(OtelInstrumentation)
 
 
 def _processors(provider: TracerProvider) -> tuple[object, ...]:

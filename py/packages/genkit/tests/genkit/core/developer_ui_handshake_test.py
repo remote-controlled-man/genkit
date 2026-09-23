@@ -13,12 +13,9 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Any
 
 import pytest
-from genkit_otel import OtelInstrumentation
 from httpx import ASGITransport, AsyncClient
 from opentelemetry import trace as trace_api
 from opentelemetry.sdk.trace import TracerProvider
-from opentelemetry.sdk.trace.export import SimpleSpanProcessor
-from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
 from genkit import ActionKind, Genkit
 from genkit._core._action import Action
@@ -44,37 +41,12 @@ def _hex_id(value: str, length: int) -> bool:
     return len(value) == length and all(c in '0123456789abcdef' for c in value)
 
 
-def _flush_exporters_in_provider(provider: TracerProvider) -> None:
-    active = getattr(provider, '_active_span_processor', None)
-    if active is None:
-        return
-    processors = getattr(active, '_span_processors', [active])
-    for proc in processors:
-        exp = getattr(proc, 'span_exporter', None) or getattr(proc, 'exporter', None)
-        if exp is not None and hasattr(exp, 'force_flush'):
-            exp.force_flush()
-
-
 def _force_flush() -> None:
     flush_direct_http_instrumentations()
-    for inst in instrumentations:
-        if isinstance(inst, OtelInstrumentation) and inst._tracer_provider is not None:
-            inst._tracer_provider.force_flush()
-            _flush_exporters_in_provider(inst._tracer_provider)
-    provider = trace_api.get_tracer_provider()
-    if isinstance(provider, TracerProvider):
-        provider.force_flush()
-        _flush_exporters_in_provider(provider)
 
 
 async def _joke() -> str:
     return 'Why did the cat cross the road?'
-
-
-def _hang_exporter(exporter: InMemorySpanExporter) -> None:
-    provider = trace_api.get_tracer_provider()
-    assert isinstance(provider, TracerProvider)
-    provider.add_span_processor(SimpleSpanProcessor(exporter))
 
 
 def _handshake_server() -> ReflectionServerV2:
@@ -138,7 +110,6 @@ async def test_handshake_url_in_dev_turns_tracing_on(
         _force_flush()
 
         assert is_instrumented_by(GenkitBuiltinInstrumentation)
-        assert not is_instrumented_by(OtelInstrumentation)
         assert _hex_id(result.trace_id, 32)
         assert _hex_id(result.span_id, 16)
         assert posts
@@ -207,18 +178,20 @@ async def test_notify_url_in_dev_turns_tracing_on(monkeypatch: pytest.MonkeyPatc
 
 
 @pytest.mark.asyncio
-async def test_handshake_still_fills_the_traces_tab_when_otel_is_already_on(
+async def test_handshake_still_fills_the_traces_tab_when_another_backend_is_on(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """OtelInstrumentation is already on; handshake still POSTs to the Developer UI."""
+    """A backend is already on; handshake still POSTs to the Developer UI."""
     monkeypatch.setenv(GENKIT_ENV, 'dev')
     server, posts = _start_collector()
     url = f'http://127.0.0.1:{server.server_address[1]}'
-    try:
-        _hang_exporter(InMemorySpanExporter())
-        configure_instrumentation(OtelInstrumentation())
-        assert is_instrumented_by(OtelInstrumentation)
 
+    class AlreadyOn:
+        async def run_in_new_span(self, metadata: object, next: object) -> object:
+            return await next()  # type: ignore[misc]
+
+    try:
+        configure_instrumentation(AlreadyOn())
         _handshake_server().apply_handshake_telemetry(url)
         action = Action(name='joke', kind=ActionKind.FLOW, fn=_joke)
         result = await action.run()
